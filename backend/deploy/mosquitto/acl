@@ -1,0 +1,10 @@
+# The device owns its own topics; the backend reads both v1 filters.
+# Replace powerguard-01 with the device id in use.
+
+user powerguard-device
+topic write powerguard/v1/devices/powerguard-01/telemetry
+topic write powerguard/v1/devices/powerguard-01/status
+
+user powerguard-backend
+topic read powerguard/v1/devices/+/telemetry
+topic read powerguard/v1/devices/+/status

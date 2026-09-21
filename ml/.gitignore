@@ -1,0 +1,10 @@
+# Runtime data and models: never committed. `ML_ARCHITECTURE.md` artifact contract.
+artifacts/
+data/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.joblib

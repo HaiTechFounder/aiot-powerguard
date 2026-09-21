@@ -1,0 +1,14 @@
+#
+# Build-time requirements, pinned to match [build-system].requires in
+# pyproject.toml. pip-compile marks setuptools as "unsafe" and refuses to emit
+# it, so this file is maintained by hand and must be updated together with
+# pyproject.toml.
+#
+# Reproducible install without an isolated build environment:
+#
+#     pip install --require-hashes -r requirements-build.lock   # or plain -r
+#     pip install --no-build-isolation --no-deps -e .
+#     pip install --no-deps -r requirements.lock
+#
+setuptools==84.0.0
+wheel==0.48.0

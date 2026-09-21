@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powerguard-ml"
+version = "0.1.0"
+description = "AIoT PowerGuard anomaly-detection prototype (Phase 05 Lite)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<3",
+    "scikit-learn>=1.5,<2",
+    "joblib>=1.4,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+    "ruff>=0.6,<1.0",
+    "mypy>=1.11,<2.0",
+]
+
+[project.scripts]
+powerguard-ml-train = "powerguard_ml.train:main"
+powerguard-ml-evaluate = "powerguard_ml.evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+# The backend domain layer is standard-library only, so the adapter can be
+# type-checked against the real `Telemetry`/`AnomalyVerdict` without installing
+# the backend's own dependencies.
+mypy_path = "src:../backend/src"
+packages = ["powerguard_ml"]
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,0 +1,18 @@
+{
+  "AnomalyMethod": [
+    "rule",
+    "isolation_forest",
+    "hybrid"
+  ],
+  "DeviceStatus": [
+    "online",
+    "offline",
+    "stale"
+  ],
+  "EventType": [
+    "telemetry",
+    "anomaly",
+    "status"
+  ],
+  "ws_schema_version": 1
+}

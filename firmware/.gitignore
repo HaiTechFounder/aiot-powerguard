@@ -1,0 +1,13 @@
+# PlatformIO build / dependency artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+compile_commands.json
+
+# Local secrets (Wi-Fi / MQTT credentials) - never commit
+include/secrets.h
+src/secrets.h
+secrets.h
+.env

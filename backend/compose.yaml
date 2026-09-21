@@ -1,0 +1,30 @@
+# Optional local broker. Docker is never required: the mandatory Phase 03
+# software gate runs entirely against the fake MQTT transport.
+#
+# Create deploy/mosquitto/passwd FIRST — compose fails without it, because the
+# file is mounted read-only. See deploy/mosquitto/README.md.
+#
+#   docker compose up -d mosquitto
+#   docker compose logs -f mosquitto
+#   docker compose down -v
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: powerguard-mosquitto
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+    ports:
+      # Published on loopback only: this broker has no TLS and is not for a
+      # shared network. The in-container listener binds 0.0.0.0 so that this
+      # mapping can reach it.
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.docker.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./deploy/mosquitto/acl:/mosquitto/config/acl:ro
+      # Generated locally and git-ignored; see deploy/mosquitto/README.md.
+      - ./deploy/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto-data:/mosquitto/data
+    restart: "no"
+
+volumes:
+  # Named, so `docker compose down -v` removes it and nothing is left on disk.
+  mosquitto-data:

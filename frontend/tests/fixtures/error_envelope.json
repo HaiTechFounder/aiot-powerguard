@@ -1,0 +1,23 @@
+{
+  "not_found": {
+    "error": {
+      "code": "NOT_FOUND",
+      "details": null,
+      "message": "unknown device: ghost"
+    }
+  },
+  "validation": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "details": {
+        "fields": [
+          {
+            "field": "query.limit",
+            "issue": "greater_than_equal"
+          }
+        ]
+      },
+      "message": "request validation failed"
+    }
+  }
+}

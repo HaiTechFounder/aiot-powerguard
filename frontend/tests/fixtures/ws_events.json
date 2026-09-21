@@ -1,0 +1,47 @@
+{
+  "anomaly": {
+    "data": {
+      "detected_at": "2026-01-01T00:00:00.000Z",
+      "device_id": "powerguard-01",
+      "id": 11,
+      "method": "rule",
+      "model_version": null,
+      "reasons": [
+        "overcurrent_rule"
+      ],
+      "score": 0.91,
+      "telemetry_id": 1
+    },
+    "emitted_at": "2026-01-01T00:00:00.000Z",
+    "schema_version": 1,
+    "type": "anomaly"
+  },
+  "status": {
+    "data": {
+      "device_id": "powerguard-01",
+      "last_seen_at": "2026-01-01T00:00:00.000Z",
+      "status": "stale"
+    },
+    "emitted_at": "2026-01-01T00:00:00.000Z",
+    "schema_version": 1,
+    "type": "status"
+  },
+  "telemetry": {
+    "data": {
+      "boot_id": "7fa31c09",
+      "current_a": 0.417,
+      "device_id": "powerguard-01",
+      "energy_wh": 0.284,
+      "id": 1,
+      "power_w": 3.269,
+      "received_at": "2026-01-01T00:00:00.000Z",
+      "sampled_at": null,
+      "sensor_status": "ok",
+      "seq": 1,
+      "voltage_v": 7.84
+    },
+    "emitted_at": "2026-01-01T00:00:00.000Z",
+    "schema_version": 1,
+    "type": "telemetry"
+  }
+}

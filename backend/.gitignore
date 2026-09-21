@@ -1,0 +1,47 @@
+# Local environment / secrets.
+# The root .gitignore excludes .env.*, so the committed example is re-included.
+.env
+.env.local
+!.env.example
+.venv/
+venv/
+
+# Runtime data - never committed
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+logs/
+*.log
+
+# Broker credentials generated locally
+deploy/mosquitto/passwd
+deploy/mosquitto/*.passwd
+
+# Model artifacts and exported datasets
+models/
+exports/
+*.joblib
+*.pkl
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Synthetic publisher output
+scripts/out/
+
+# Local broker runtime
+deploy/mosquitto/data/
