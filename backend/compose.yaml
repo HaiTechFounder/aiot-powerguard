@@ -16,7 +16,7 @@ services:
       # Published on loopback only: this broker has no TLS and is not for a
       # shared network. The in-container listener binds 0.0.0.0 so that this
       # mapping can reach it.
-      - "127.0.0.1:1883:1883"
+      - "1883:1883"
     volumes:
       - ./deploy/mosquitto/mosquitto.docker.conf:/mosquitto/config/mosquitto.conf:ro
       - ./deploy/mosquitto/acl:/mosquitto/config/acl:ro

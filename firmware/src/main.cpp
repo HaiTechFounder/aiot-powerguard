@@ -5,6 +5,7 @@
 //   power_sensor - INA226 bring-up and acquisition
 //   measurement  - validation and energy integration
 //   diagnostics  - serial presentation
+//   display      - local MAX7219 readout (presentation only)
 //   scheduler    - rollover-safe deadlines
 //   wifi_manager / mqtt_manager - connectivity
 //   telemetry    - payload, bounded queue
@@ -18,6 +19,7 @@
 
 #include "config.h"
 #include "diagnostics.h"
+#include "display.h"
 #include "mqtt_manager.h"
 #include "power_sensor.h"
 #include "scheduler.h"
@@ -44,6 +46,12 @@ powerguard::sensor::SensorState g_lastReportedState =
 powerguard::sched::Deadline g_sampleDeadline;
 powerguard::sched::Deadline g_telemetryDeadline;
 powerguard::sched::Deadline g_statusDeadline;
+
+// The last acquisition attempt, valid or not. The display needs to know what
+// the sensor just said, which is not the same question as "what was the last
+// good reading" - a stale good reading must not keep showing as if it were now.
+powerguard::measurement::PowerMeasurement g_lastSample{};
+bool g_hasSample = false;
 
 void waitForSerial() {
   const unsigned long start = millis();
@@ -81,6 +89,11 @@ powerguard::measurement::EnergyIntegrator& energy() {
 
 powerguard::telemetry::TelemetryQueue& queue() {
   static powerguard::telemetry::TelemetryQueue instance;
+  return instance;
+}
+
+powerguard::display::Max7219Display& panel() {
+  static powerguard::display::Max7219Display instance;
   return instance;
 }
 
@@ -185,6 +198,10 @@ void setup() {
   powerSensor().printStatus(Serial);
   g_lastReportedState = powerSensor().state();
 
+  // Local readout comes up before connectivity so the panel is informative
+  // while Wi-Fi is still associating.
+  panel().begin();
+
   wifi().begin();
   mqtt().begin(g_bootId);
 
@@ -220,6 +237,17 @@ void loop() {
     // Fed with every attempt: an invalid sample breaks integration continuity
     // so the unmeasured interval is not charged to the boot total.
     energy().update(sample);
+    g_lastSample = sample;
+    g_hasSample = true;
+  }
+
+  // Presentation only, and before the network work so a slow reconnect cannot
+  // delay the readout. Nothing below depends on what the panel did.
+  {
+    const bool fresh =
+        g_hasSample &&
+        (now - g_lastSample.timestampMs) < powerguard::display::kSampleStaleAfterMs;
+    panel().tick(now, g_lastSample, fresh);
   }
 
   wifi().tick(now);

@@ -19,6 +19,7 @@
 #include "backoff.h"
 #include "config.h"
 #include "diagnostics.h"
+#include "display_format.h"
 #include "measurement.h"
 #include "power_sensor.h"
 #include "scheduler.h"
@@ -1045,6 +1046,99 @@ void setUp() {
 }
 void tearDown() {}
 
+
+// --- display formatting (P-display) ----------------------------------------
+//
+// The panel is the only readout an operator has when the network is down, so
+// what it may and may not claim is worth pinning: it never shows a stale
+// number as current, never invents digits it cannot fit, and never loses the
+// sign of a reverse current.
+
+namespace {
+
+void assertGroup(float value, bool valid, uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3) {
+  uint8_t out[powerguard::display::kGroupDigits];
+  powerguard::display::formatGroup(out, value, valid);
+  TEST_ASSERT_EQUAL_UINT8(d0, out[0]);
+  TEST_ASSERT_EQUAL_UINT8(d1, out[1]);
+  TEST_ASSERT_EQUAL_UINT8(d2, out[2]);
+  TEST_ASSERT_EQUAL_UINT8(d3, out[3]);
+}
+
+}  // namespace
+
+void test_display_renders_two_decimals_with_the_point_on_the_units_digit() {
+  using namespace powerguard::display;
+  // 8.39 -> blank, 8., 3, 9
+  assertGroup(8.39f, true, kCodeBBlank, 8 | kDecimalPointMask, 3, 9);
+  // 12.34 keeps both integer digits.
+  assertGroup(12.34f, true, 1, 2 | kDecimalPointMask, 3, 4);
+}
+
+void test_display_blanks_a_leading_zero_rather_than_printing_it() {
+  using namespace powerguard::display;
+  assertGroup(0.42f, true, kCodeBBlank, 0 | kDecimalPointMask, 4, 2);
+}
+
+void test_display_keeps_the_sign_of_a_reverse_current() {
+  using namespace powerguard::display;
+  // Reverse flow is real; the panel must not render it as if it were forward.
+  assertGroup(-1.25f, true, kCodeBDash, 1 | kDecimalPointMask, 2, 5);
+  assertGroup(-8.19f, true, kCodeBDash, 8 | kDecimalPointMask, 1, 9);
+}
+
+void test_display_shows_dashes_when_the_sample_is_not_valid() {
+  using namespace powerguard::display;
+  assertGroup(7.99f, false, kCodeBDash, kCodeBDash, kCodeBDash, kCodeBDash);
+}
+
+void test_display_refuses_a_value_too_wide_for_four_digits() {
+  using namespace powerguard::display;
+  // Truncating 123.4 into "23.40" would be a plausible, wrong number.
+  assertGroup(123.4f, true, kCodeBE, kCodeBE, kCodeBE, kCodeBE);
+  // A sign costs an integer digit, so -10.0 no longer fits either.
+  assertGroup(-10.0f, true, kCodeBE, kCodeBE, kCodeBE, kCodeBE);
+}
+
+void test_display_rounds_to_hundredths_without_escaping_its_own_range() {
+  using namespace powerguard::display;
+  assertGroup(8.395f, true, kCodeBBlank, 8 | kDecimalPointMask, 4, 0);
+  // Rounds to 100.00, which does not fit; it must not wrap to "00.00".
+  assertGroup(99.999f, true, kCodeBE, kCodeBE, kCodeBE, kCodeBE);
+}
+
+void test_display_panel_puts_voltage_left_and_current_right() {
+  using namespace powerguard::display;
+  uint8_t out[kDigitCount];
+  formatPanel(out, 8.39f, true, 1.25f, true);
+  // Voltage occupies DIG7..DIG4, most significant first.
+  TEST_ASSERT_EQUAL_UINT8(kCodeBBlank, out[7]);
+  TEST_ASSERT_EQUAL_UINT8(8 | kDecimalPointMask, out[6]);
+  TEST_ASSERT_EQUAL_UINT8(3, out[5]);
+  TEST_ASSERT_EQUAL_UINT8(9, out[4]);
+  // Current occupies DIG3..DIG0.
+  TEST_ASSERT_EQUAL_UINT8(kCodeBBlank, out[3]);
+  TEST_ASSERT_EQUAL_UINT8(1 | kDecimalPointMask, out[2]);
+  TEST_ASSERT_EQUAL_UINT8(2, out[1]);
+  TEST_ASSERT_EQUAL_UINT8(5, out[0]);
+}
+
+void test_display_panel_shows_all_dashes_when_nothing_was_measured() {
+  using namespace powerguard::display;
+  uint8_t out[kDigitCount];
+  formatPanel(out, 0.0f, false, 0.0f, false);
+  for (uint8_t i = 0; i < kDigitCount; ++i) {
+    TEST_ASSERT_EQUAL_UINT8(kCodeBDash, out[i]);
+  }
+}
+
+void test_display_refresh_interval_stays_within_the_required_window() {
+  // 500-1000 ms is the requirement; a regression either way is a behaviour
+  // change, not a tuning detail.
+  TEST_ASSERT_TRUE(powerguard::display::kRefreshIntervalMs >= 500UL);
+  TEST_ASSERT_TRUE(powerguard::display::kRefreshIntervalMs <= 1000UL);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
 
@@ -1108,6 +1202,15 @@ int main(int, char**) {
   RUN_TEST(test_sensor_invalid_read_never_overwrites_the_last_valid_sample);
   RUN_TEST(test_sensor_transport_loss_demotes_to_retry_and_recovers);
   RUN_TEST(test_sensor_retry_schedule_widens_after_repeated_failures);
+  RUN_TEST(test_display_renders_two_decimals_with_the_point_on_the_units_digit);
+  RUN_TEST(test_display_blanks_a_leading_zero_rather_than_printing_it);
+  RUN_TEST(test_display_keeps_the_sign_of_a_reverse_current);
+  RUN_TEST(test_display_shows_dashes_when_the_sample_is_not_valid);
+  RUN_TEST(test_display_refuses_a_value_too_wide_for_four_digits);
+  RUN_TEST(test_display_rounds_to_hundredths_without_escaping_its_own_range);
+  RUN_TEST(test_display_panel_puts_voltage_left_and_current_right);
+  RUN_TEST(test_display_panel_shows_all_dashes_when_nothing_was_measured);
+  RUN_TEST(test_display_refresh_interval_stays_within_the_required_window);
 
   return UNITY_END();
 }
