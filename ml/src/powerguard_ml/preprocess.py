@@ -12,14 +12,92 @@ rows or the score distribution is fitted on the future it is meant to judge.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from powerguard_ml.dataset import Sample
 
 #: Firmware publishes every two seconds; twice that is the gap tolerance.
 CADENCE_SECONDS = 2.0
 GAP_TOLERANCE_FACTOR = 2.0
+
+#: How far `seq` may advance between two published rows with nothing missing.
+#:
+#: The firmware samples every 1000 ms (`POWERGUARD_SENSOR_SAMPLE_INTERVAL_MS`)
+#: and publishes every 2000 ms (`POWERGUARD_TELEMETRY_INTERVAL_MS`), and
+#: `PowerSensor::read` consumes a sequence number on *every attempt*, valid or
+#: not. Each publish carries only the newest valid sample
+#: (`main.cpp: enqueueTelemetry`), so a healthy stream advances `seq` by two
+#: per stored row. Two is therefore the expected stride, not a hole.
+#:
+#: The bound is what keeps this honest. Any advance up to the stride is
+#: consistent with no publish having been lost, because a publish always takes
+#: the newest sample. An advance *beyond* it proves at least one telemetry
+#: deadline produced nothing -- a genuinely missing reading -- and ends the
+#: segment. A device configured to publish every sample declares a stride of
+#: 1, and then an advance of 2 is a hole again.
+EXPECTED_SEQ_STRIDE = 2
+
+#: The widest stride any artifact or manifest may declare. The stride exists to
+#: absorb the documented sample/publish ratio, not to excuse lost readings, so
+#: it is bounded: an unbounded value would make every hole look contiguous.
+MAX_SEQ_STRIDE = 8
+
+
+class Ordered(Protocol):
+    """What contiguity reads. `Sample` and the backend's `Telemetry` both fit."""
+
+    @property
+    def boot_id(self) -> str: ...
+
+    @property
+    def seq(self) -> int: ...
+
+    @property
+    def received_at(self) -> dt.datetime: ...
+
+
+def check_stride(value: object) -> int:
+    """A declared stride as an int in ``1..MAX_SEQ_STRIDE``, or a ValueError.
+
+    Used wherever a stride enters from outside -- a manifest, an artifact's
+    metadata -- so a malformed value is refused rather than coerced.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"expected_seq_stride must be an integer, not {value!r}")
+    if not 1 <= value <= MAX_SEQ_STRIDE:
+        raise ValueError(
+            f"expected_seq_stride must be between 1 and {MAX_SEQ_STRIDE}, not {value}"
+        )
+    return value
+
+
+def is_contiguous(
+    previous: Ordered,
+    current: Ordered,
+    *,
+    expected_seq_stride: int,
+    cadence_seconds: float = CADENCE_SECONDS,
+) -> bool:
+    """Whether `current` may extend a window that ends at `previous`.
+
+    The one contiguity rule, shared by offline preparation, the audit and the
+    online adapter, so a window the model was trained on and a window it is
+    asked to score are cut the same way:
+
+    * the same `boot_id` -- a reboot resets the sequence;
+    * ``1 <= seq advance <= expected_seq_stride`` -- wider is a lost reading;
+    * ``0 < elapsed <= cadence * GAP_TOLERANCE_FACTOR`` -- a stall is a hole.
+    """
+    if current.boot_id != previous.boot_id:
+        return False
+    advance = current.seq - previous.seq
+    if not 1 <= advance <= expected_seq_stride:
+        return False
+    elapsed = (current.received_at - previous.received_at).total_seconds()
+    return 0 < elapsed <= cadence_seconds * GAP_TOLERANCE_FACTOR
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +129,14 @@ def prepare(
     cadence_seconds: float = CADENCE_SECONDS,
     device_id: str | None = None,
     calibration_fingerprint: str | None = None,
+    expected_seq_stride: int = EXPECTED_SEQ_STRIDE,
 ) -> PreparedData:
     """Filter, order, dedupe and cut into contiguous segments.
 
     One device and one calibration regime only: an artifact trained across two
     electrical calibrations would be fitted on two different sensors.
     """
+    check_stride(expected_seq_stride)
     rows = list(samples)
     total = len(rows)
 
@@ -119,21 +199,17 @@ def prepare(
         deduped.append(row)
     dropped_duplicate = len(finite) - len(deduped)
 
-    tolerance = cadence_seconds * GAP_TOLERANCE_FACTOR
     segments: list[list[Sample]] = []
     current: list[Sample] = []
     for row in deduped:
-        if current:
-            previous = current[-1]
-            elapsed = (row.received_at - previous.received_at).total_seconds()
-            contiguous = (
-                row.boot_id == previous.boot_id
-                and row.seq == previous.seq + 1
-                and 0 < elapsed <= tolerance
-            )
-            if not contiguous:
-                segments.append(current)
-                current = []
+        if current and not is_contiguous(
+            current[-1],
+            row,
+            expected_seq_stride=expected_seq_stride,
+            cadence_seconds=cadence_seconds,
+        ):
+            segments.append(current)
+            current = []
         current.append(row)
     if current:
         segments.append(current)

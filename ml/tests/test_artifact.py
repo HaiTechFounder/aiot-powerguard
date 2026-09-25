@@ -159,7 +159,10 @@ def test_a_missing_model_file_is_refused(trained_artifact) -> None:
 def test_saving_creates_the_directory(tmp_path, trained_artifact) -> None:
     _, model = trained_artifact
     target = tmp_path / "nested" / "device" / "v2"
-    save(model, Metadata(model_version="v2", device_id="d", created_at=now_utc()), target)
+    metadata = Metadata(
+        model_version="v2", device_id="d", created_at=now_utc(), expected_seq_stride=2
+    )
+    save(model, metadata, target)
     assert (target / MODEL_FILE).exists()
     assert (target / METADATA_FILE).exists()
 
@@ -227,3 +230,42 @@ def test_a_boolean_is_not_accepted_as_a_number(trained_artifact) -> None:
     _rewrite(directory, window=True)
     with pytest.raises(ArtifactError, match="not an integer"):
         load(directory)
+
+
+# -- the seq stride travels with the artifact ------------------------------
+
+
+def test_the_stride_is_recorded_in_the_metadata(trained_artifact) -> None:
+    directory, _ = trained_artifact
+    _, payload = load(directory)
+    assert payload["expected_seq_stride"] == 2
+
+
+def test_a_legacy_artifact_without_a_stride_is_refused_not_guessed(trained_artifact) -> None:
+    directory, _ = trained_artifact
+    path = directory / METADATA_FILE
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["expected_seq_stride"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ArtifactError, match="legacy artifact"):
+        load(directory)
+
+
+@pytest.mark.parametrize("value", [0, -1, 9, 1000, "2", 2.0, 2.5, True, None, [2]])
+def test_an_invalid_stride_is_refused(trained_artifact, value) -> None:
+    directory, _ = trained_artifact
+    _rewrite(directory, expected_seq_stride=value)
+    with pytest.raises(ArtifactError, match="expected_seq_stride"):
+        load(directory)
+
+
+def test_metadata_that_is_not_utf8_is_refused(tmp_path) -> None:
+    (tmp_path / METADATA_FILE).write_bytes(b"\xff\xfe\x00{")
+    with pytest.raises(ArtifactError, match="UnicodeDecodeError"):
+        load(tmp_path)
+
+
+def test_absurdly_nested_metadata_is_refused(tmp_path) -> None:
+    (tmp_path / METADATA_FILE).write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(ArtifactError):
+        load(tmp_path)

@@ -12,9 +12,15 @@ Two rules decide whether a verdict is even possible:
      `unavailable`; ingestion and rules continue exactly as before. Refusing to
      start because a model is absent would take the whole pipeline down with it.
   2. **A window is 30 contiguous samples or it does not exist.** The adapter
-     keeps a per-device buffer and drops it on reboot, a sequence gap, or a
-     time gap over twice the cadence. Until 30 new samples arrive, `evaluate`
-     returns None -- silence, not a guess.
+     keeps a per-device buffer and drops it on reboot, a `seq` advance outside
+     ``1..expected_seq_stride``, a time gap over twice the cadence, or a
+     rejected reading. Until 30 new samples arrive, `evaluate` returns None --
+     silence, not a guess.
+
+Contiguity is `preprocess.is_contiguous`, the same predicate training used,
+with the stride the artifact's metadata declares. Firmware publishes one of
+every two samples, so a healthy stream advances `seq` by 2; an adapter that
+demanded +1 would reset on every reading and never score anything.
 
 `evaluate` is called once per accepted reading from the MQTT ingestion path, so
 it stays allocation-light and never blocks.
@@ -29,12 +35,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from powerguard_ml.artifact import ArtifactError
+from powerguard_ml.artifact import ArtifactError, stride_of
 from powerguard_ml.artifact import load as load_artifact
 from powerguard_ml.dataset import Sample
 from powerguard_ml.features import WINDOW, window_vector
 from powerguard_ml.model import TrainedModel
-from powerguard_ml.preprocess import CADENCE_SECONDS, GAP_TOLERANCE_FACTOR
+from powerguard_ml.preprocess import CADENCE_SECONDS, is_contiguous
 
 READY = "ready"
 UNAVAILABLE = "unavailable"
@@ -85,6 +91,8 @@ class IsolationForestInference:
         self._model: TrainedModel | None = None
         self._metadata: dict[str, Any] = {}
         self._model_version = model_version
+        #: The `seq` advance this artifact's windows were cut with.
+        self._stride = 0
         #: The only device this artifact may be asked about.
         self._artifact_device_id: str | None = None
         #: Why the model is unavailable, for logs and the health endpoint.
@@ -112,6 +120,9 @@ class IsolationForestInference:
             self.unavailable_reason = "artifact metadata names no device"
             return
 
+        # `artifact.load` has already validated it; a legacy artifact that
+        # declares no stride never gets this far.
+        self._stride = stride_of(metadata)
         self._model = model
         self._metadata = metadata
         self._artifact_device_id = owner
@@ -173,9 +184,14 @@ class IsolationForestInference:
             buffer = deque(maxlen=WINDOW)
             self._buffers[device] = buffer
             return buffer
-        if buffer and not _contiguous(buffer[-1], telemetry, self._cadence):
-            # A reboot or a hole invalidates the window; 30 new samples are
-            # needed before the next vector means anything.
+        if buffer and not is_contiguous(
+            buffer[-1],
+            telemetry,
+            expected_seq_stride=self._stride,
+            cadence_seconds=self._cadence,
+        ):
+            # A reboot, a lost reading or a stall invalidates the window; 30
+            # new samples are needed before the next vector means anything.
             buffer.clear()
             self._runs[device] = 0
         return buffer
@@ -190,12 +206,10 @@ class IsolationForestInference:
     def metadata(self) -> dict[str, Any]:
         return dict(self._metadata)
 
-
-def _contiguous(previous: TelemetryLike, current: TelemetryLike, cadence: float) -> bool:
-    if current.boot_id != previous.boot_id or current.seq != previous.seq + 1:
-        return False
-    elapsed = (current.received_at - previous.received_at).total_seconds()
-    return 0 < elapsed <= cadence * GAP_TOLERANCE_FACTOR
+    @property
+    def expected_seq_stride(self) -> int | None:
+        """The stride windows are cut with, or None when nothing is loaded."""
+        return self._stride if self._model is not None else None
 
 
 def _as_sample(row: TelemetryLike) -> Sample:

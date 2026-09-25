@@ -108,3 +108,76 @@ def test_a_rerun_with_the_same_seed_reports_the_same_decisions(tmp_path) -> None
 
     for key in ("windows", "flagged_windows", "normal_flag_rate", "score_quantiles"):
         assert reports[0][key] == reports[1][key]
+
+
+# -- promotion, stride and labels -------------------------------------------
+
+
+def test_synthetic_data_can_never_be_promoted(tmp_path, capsys) -> None:
+    code = train.main(["--synthetic", "600", "--artifacts", str(tmp_path), "--promote"])
+    assert code == 3
+    assert "DATA_GATE_BLOCKED" in capsys.readouterr().err
+    # Refused before anything was written.
+    assert not any(tmp_path.iterdir())
+
+
+def test_an_unapproved_export_cannot_be_promoted(tmp_path, capsys) -> None:
+    path = tmp_path / "export.jsonl"
+    to_jsonl(training_set(400), path)
+    code = train.main(
+        ["--dataset", str(path), "--artifacts", str(tmp_path / "a"), "--promote"]
+    )
+    assert code == 3
+    assert "DATA_GATE_BLOCKED" in capsys.readouterr().err
+    assert not (tmp_path / "a").exists()
+
+
+def test_the_artifact_records_the_stride_training_used(tmp_path) -> None:
+    train.main(["--synthetic", "600", "--artifacts", str(tmp_path)])
+    metadata = read_metadata(tmp_path / DEFAULT_DEVICE / "v1")
+    assert metadata["expected_seq_stride"] == 2
+
+
+def test_the_manifest_stride_reaches_the_artifact(tmp_path) -> None:
+    import datetime as dt
+
+    from powerguard_ml import review
+
+    rows = training_set(400)
+    path = tmp_path / "export.jsonl"
+    to_jsonl(rows, path)
+    payload = review.template(DEFAULT_DEVICE, rows)
+    payload["expected_seq_stride"] = 1
+    payload["approved_intervals"][0]["to"] = (
+        (rows[-1].received_at + dt.timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+    )
+    manifest = tmp_path / "review.json"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    code = train.main(
+        [
+            "--dataset",
+            str(path),
+            "--manifest",
+            str(manifest),
+            "--artifacts",
+            str(tmp_path / "a"),
+        ]
+    )
+    assert code == 0
+    metadata = read_metadata(tmp_path / "a" / DEFAULT_DEVICE / "v1")
+    assert metadata["expected_seq_stride"] == 1
+    # The template attests to nothing, so nothing is established.
+    assert metadata["data_quality"] == "quality_not_established"
+    assert metadata["data_provenance"] == "unknown"
+
+
+def test_rows_labelled_abnormal_never_train_the_baseline(tmp_path, capsys) -> None:
+    from dataclasses import replace
+
+    path = tmp_path / "faults.jsonl"
+    to_jsonl([replace(row, label=1) for row in training_set(400)], path)
+    code = train.main(["--dataset", str(path), "--artifacts", str(tmp_path / "a")])
+    # Every row is a labelled fault, so nothing is left to fit a baseline on.
+    assert code == 2
+    assert "no usable segment" in capsys.readouterr().err

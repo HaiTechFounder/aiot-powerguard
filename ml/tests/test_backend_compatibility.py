@@ -322,3 +322,173 @@ def test_the_adapter_reports_the_artifact_it_loaded(trained_artifact) -> None:
     engine = IsolationForestInference(directory)
     assert engine.metadata["device_id"] == DEFAULT_DEVICE
     assert engine.metadata["data_quality"] == "quality_not_established"
+
+
+# -- the seq stride: firmware publishes one of every two samples ------------
+#
+# The adapter must cut live windows with the stride the artifact was trained
+# with. Demanding +1 against real firmware reset the window on every reading,
+# so a model loaded against hardware could never score anything.
+
+
+def _strided(rows, stride: int = 2):
+    from dataclasses import replace
+
+    first = rows[0].seq
+    return [replace(row, seq=first + stride * index) for index, row in enumerate(rows)]
+
+
+def _scoring_spy(engine: IsolationForestInference) -> list[int]:
+    """Count the windows the engine actually scores, without changing them."""
+    model = engine._model
+    assert model is not None
+    calls: list[int] = []
+
+    class _Spy:
+        def __getattr__(self, name):  # type: ignore[no-untyped-def]
+            return getattr(model, name)
+
+        def score(self, matrix):  # type: ignore[no-untyped-def]
+            calls.append(len(matrix))
+            return model.score(matrix)
+
+    engine._model = _Spy()  # type: ignore[assignment]
+    return calls
+
+
+def test_the_artifact_declares_the_stride_the_adapter_uses(trained_artifact) -> None:
+    from powerguard_ml.preprocess import EXPECTED_SEQ_STRIDE
+
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    assert engine.metadata["expected_seq_stride"] == EXPECTED_SEQ_STRIDE
+    assert engine.expected_seq_stride == EXPECTED_SEQ_STRIDE
+
+
+def test_a_seq_stride_of_two_fills_a_window_and_is_scored(trained_artifact) -> None:
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    calls = _scoring_spy(engine)
+    feed(engine, _strided(generate(WINDOW + 10, boot_id="boot-stride")))
+    # Every reading from the 30th on completes a window and is scored.
+    assert len(calls) == 11
+
+
+def test_a_stride_two_departure_is_flagged_end_to_end(trained_artifact) -> None:
+    """The real firmware cadence reaches a verdict, not just a full buffer."""
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    rows = _strided(
+        generate(
+            220,
+            seed=33,
+            boot_id="boot-stride-spike",
+            start_id=80_000,
+            scenarios=(Scenario("spike", start=120, length=60),),
+        )
+    )
+    assert any(verdict is not None for verdict in feed(engine, rows))
+
+
+def test_an_advance_beyond_the_stride_still_resets_the_window(trained_artifact) -> None:
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    calls = _scoring_spy(engine)
+    rows = _strided(generate(WINDOW + 20, boot_id="boot-loss"))
+    # One lost publish: the reading after it advances by 4, beyond stride 2.
+    holed = rows[:WINDOW] + rows[WINDOW + 1 :]
+    feed(engine, holed)
+    # One window scored before the hole; after it, 30 fresh readings are needed
+    # and only 19 arrive, so nothing else is scored.
+    assert len(calls) == 1
+
+
+def test_a_stride_wider_than_declared_is_never_scored(trained_artifact) -> None:
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    calls = _scoring_spy(engine)
+    rows = _strided(
+        generate(
+            220,
+            seed=33,
+            boot_id="boot-wide",
+            start_id=90_000,
+            scenarios=(Scenario("spike", start=120, length=60),),
+        ),
+        stride=3,
+    )
+    assert feed(engine, rows) == [None] * len(rows)
+    assert calls == []
+
+
+def test_a_stride_one_artifact_treats_an_advance_of_two_as_a_hole(trained_artifact) -> None:
+    import json
+
+    from powerguard_ml.artifact import METADATA_FILE
+
+    directory, _ = trained_artifact
+    path = directory / METADATA_FILE
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload | {"expected_seq_stride": 1}), encoding="utf-8")
+
+    engine = IsolationForestInference(directory)
+    assert engine.expected_seq_stride == 1
+    calls = _scoring_spy(engine)
+    feed(engine, _strided(generate(WINDOW + 10, boot_id="boot-strict")))
+    assert calls == []
+    feed(engine, generate(WINDOW + 10, boot_id="boot-every-sample", start_id=95_000))
+    assert len(calls) == 11
+
+
+def test_a_reboot_resets_the_window_whatever_the_stride(trained_artifact) -> None:
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    calls = _scoring_spy(engine)
+    feed(engine, _strided(generate(WINDOW - 1, boot_id="boot-one")))
+    feed(engine, _strided(generate(WINDOW - 1, boot_id="boot-two", start_id=96_000)))
+    assert calls == []
+
+
+def test_a_time_gap_resets_the_window_whatever_the_stride(trained_artifact) -> None:
+    from dataclasses import replace
+
+    directory, _ = trained_artifact
+    engine = IsolationForestInference(directory)
+    calls = _scoring_spy(engine)
+    rows = _strided(generate(2 * WINDOW - 2, boot_id="boot-stall"))
+    stalled = [
+        replace(row, received_at=row.received_at + dt.timedelta(seconds=30))
+        if index >= WINDOW - 1
+        else row
+        for index, row in enumerate(rows)
+    ]
+    feed(engine, stalled)
+    assert calls == []
+
+
+def test_a_legacy_artifact_without_a_stride_is_unavailable(trained_artifact) -> None:
+    import json
+
+    from powerguard_ml.artifact import METADATA_FILE
+
+    directory, _ = trained_artifact
+    path = directory / METADATA_FILE
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["expected_seq_stride"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    engine = IsolationForestInference(directory)
+    # Never guessed: the window rule it was trained with is unknown.
+    assert engine.readiness() == UNAVAILABLE
+    assert "legacy" in (engine.unavailable_reason or "")
+    assert engine.expected_seq_stride is None
+
+
+def test_metadata_that_is_not_utf8_becomes_unavailable(trained_artifact) -> None:
+    from powerguard_ml.artifact import METADATA_FILE
+
+    directory, _ = trained_artifact
+    (directory / METADATA_FILE).write_bytes(b'{"window": "\xff\xfe"}')
+    engine = IsolationForestInference(directory)
+    assert engine.readiness() == UNAVAILABLE
+    assert "UnicodeDecodeError" in (engine.unavailable_reason or "")

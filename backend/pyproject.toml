@@ -69,6 +69,15 @@ warn_unreachable = true
 plugins = []
 
 [[tool.mypy.overrides]]
+# powerguard_ml is an OPTIONAL dependency: the backend runs, and is type
+# checked, without it installed. `inference/loader.py` imports it inside a
+# try/except ImportError precisely so that its absence is a configuration
+# state rather than a crash.
+module = ["powerguard_ml.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
 # paho-mqtt ships partial typing and does not re-export every public name.
 module = ["paho.*"]
 ignore_missing_imports = true

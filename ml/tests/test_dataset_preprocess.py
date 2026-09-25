@@ -206,3 +206,98 @@ def test_a_dataset_with_no_fingerprint_anywhere_is_still_usable() -> None:
 
 def test_a_complete_named_regime_passes() -> None:
     assert prepare(generate(40), calibration_fingerprint=CALIBRATION_FINGERPRINT).kept == 40
+
+
+# -- the firmware's published sequence stride -------------------------------
+#
+# `PowerSensor::read` consumes a sequence number on every attempt and the
+# firmware samples twice per publish, so a healthy ESP8266 stream advances
+# `seq` by two per stored row. Treating that as a hole threw away almost every
+# real reading; treating *any* advance as contiguous would hide real loss.
+
+
+def test_the_documented_stride_stays_one_segment() -> None:
+    rows = generate(70)
+    strided = [replace(row, seq=row.seq * 2) for row in rows]
+    prepared = prepare(strided)
+    assert len(prepared.segments) == 1
+    assert prepared.kept == 70
+
+
+def test_publishing_every_sample_is_still_contiguous() -> None:
+    # An advance below the stride means more data than expected, never less.
+    assert len(prepare(generate(70)).segments) == 1
+
+
+def test_a_missed_publish_still_ends_a_segment() -> None:
+    """One skipped telemetry deadline is a genuinely missing reading."""
+    rows = [replace(row, seq=row.seq * 2) for row in generate(70)]
+    # Drop one published row: the next advance is 4, beyond the stride of 2.
+    holed = rows[:35] + rows[36:]
+    prepared = prepare(holed)
+    assert len(prepared.segments) == 2
+
+
+def test_a_stricter_stride_can_be_declared() -> None:
+    # A device that publishes every sample declares 1, and an advance of 2 is
+    # a hole again. The rule is a declaration, not a blanket relaxation.
+    rows = [replace(row, seq=row.seq * 2) for row in generate(70)]
+    assert len(prepare(rows, expected_seq_stride=1).segments) == 0
+
+
+def test_a_reboot_still_ends_a_segment_whatever_the_stride() -> None:
+    first = [replace(row, seq=row.seq * 2) for row in generate(35, boot_id="boot-a")]
+    second = [
+        replace(row, seq=row.seq * 2, boot_id="boot-b")
+        for row in generate(
+            35,
+            boot_id="boot-b",
+            start_id=100,
+            start_at=first[-1].received_at + dt.timedelta(seconds=2),
+        )
+    ]
+    assert len(prepare(first + second).segments) == 2
+
+
+def test_a_time_gap_still_ends_a_segment_whatever_the_stride() -> None:
+    rows = [replace(row, seq=row.seq * 2) for row in generate(70)]
+    shifted = [
+        replace(row, received_at=row.received_at + dt.timedelta(seconds=30))
+        if index >= 35
+        else row
+        for index, row in enumerate(rows)
+    ]
+    assert len(prepare(shifted).segments) == 2
+
+
+# -- one contiguity predicate, offline and online --------------------------
+
+
+def test_the_shared_predicate_accepts_one_up_to_the_stride() -> None:
+    from powerguard_ml.preprocess import is_contiguous
+
+    first, second = generate(2)
+    for advance, expected in ((0, False), (1, True), (2, True), (3, False), (-1, False)):
+        candidate = replace(second, seq=first.seq + advance)
+        assert is_contiguous(first, candidate, expected_seq_stride=2) is expected, advance
+
+
+def test_the_shared_predicate_rejects_a_reboot_and_a_stall() -> None:
+    from powerguard_ml.preprocess import is_contiguous
+
+    first, second = generate(2)
+    assert not is_contiguous(first, replace(second, boot_id="other"), expected_seq_stride=2)
+    stalled = replace(second, received_at=first.received_at + dt.timedelta(seconds=5))
+    assert not is_contiguous(first, stalled, expected_seq_stride=2)
+    same_instant = replace(second, received_at=first.received_at)
+    assert not is_contiguous(first, same_instant, expected_seq_stride=2)
+
+
+@pytest.mark.parametrize("value", [0, -2, 9, "2", 2.0, True, None])
+def test_an_unbounded_or_malformed_stride_is_refused(value) -> None:
+    from powerguard_ml.preprocess import check_stride
+
+    with pytest.raises(ValueError, match="expected_seq_stride"):
+        check_stride(value)
+    with pytest.raises(ValueError, match="expected_seq_stride"):
+        prepare(generate(40), expected_seq_stride=value)  # type: ignore[arg-type]

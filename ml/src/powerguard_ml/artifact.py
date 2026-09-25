@@ -7,6 +7,11 @@ opened, because a checksum verified afterwards has already lost.
 
 Beyond integrity, three things must match or the model is answering about a
 different world: the device, the feature version, and the calibration regime.
+
+A fourth decides whether the model can answer at all: `expected_seq_stride`,
+the `seq` advance the training data was cut with. The online adapter must cut
+windows by the same rule, so the stride travels in the metadata and is never
+guessed at load time -- an artifact that does not declare one is refused.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import sklearn
 from powerguard_ml import __version__ as ml_version
 from powerguard_ml.features import FEATURE_NAMES, FEATURE_VERSION, WINDOW
 from powerguard_ml.model import MODEL_KIND, TrainedModel
+from powerguard_ml.preprocess import check_stride
 
 METADATA_VERSION = "powerguard_artifact_v1"
 MODEL_FILE = "model.joblib"
@@ -45,6 +51,9 @@ class Metadata:
     model_version: str
     device_id: str
     created_at: str
+    #: The `seq` advance the training data was cut with. No default on
+    #: purpose: whoever writes an artifact states it, so it is never inferred.
+    expected_seq_stride: int
     metadata_version: str = METADATA_VERSION
     feature_version: str = FEATURE_VERSION
     feature_names: tuple[str, ...] = FEATURE_NAMES
@@ -139,11 +148,23 @@ def read_metadata(directory: Path | str) -> dict[str, Any]:
         raise ArtifactError(f"no {METADATA_FILE} in {directory}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as failure:
-        raise ArtifactError(f"{path}: metadata is not JSON: {failure}") from failure
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as failure:
+        # Not UTF-8, not JSON, or nested past the parser's limit: all three are
+        # a malformed document, and all three must surface as a refusal.
+        raise ArtifactError(
+            f"{path}: metadata is not JSON: {type(failure).__name__}: {failure}"
+        ) from failure
     if not isinstance(payload, dict):
         raise ArtifactError(f"{path}: metadata is not an object")
     return payload
+
+
+def stride_of(payload: dict[str, Any]) -> int:
+    """The artifact's declared `seq` stride, strictly validated."""
+    try:
+        return check_stride(payload.get("expected_seq_stride"))
+    except ValueError as failure:
+        raise ArtifactError(f"metadata {failure}") from failure
 
 
 def validate(
@@ -162,11 +183,20 @@ def validate(
         "feature_version",
         "feature_names",
         "window",
+        "expected_seq_stride",
         "threshold",
         "calibration_scores",
         "model_sha256",
     )
     missing = [name for name in required if name not in payload]
+    if missing == ["expected_seq_stride"]:
+        # An artifact written before the stride was recorded. Its training
+        # windows were cut with *some* rule, and guessing which one would let
+        # the adapter score windows the model never saw. Retrain it instead.
+        raise ArtifactError(
+            "metadata does not declare expected_seq_stride (a legacy artifact); the "
+            "window rule it was trained with is unknown, so it is refused. Retrain it."
+        )
     if missing:
         raise ArtifactError(f"metadata is missing: {', '.join(missing)}")
 
@@ -186,6 +216,7 @@ def validate(
         raise ArtifactError("feature order differs from this build's feature contract")
     if _as_int(payload["window"], "window") != WINDOW:
         raise ArtifactError(f"artifact window {payload['window']!r} is not {WINDOW}")
+    stride_of(payload)
     _as_float(payload["threshold"], "threshold")
     if "consecutive" in payload:
         _as_int(payload["consecutive"], "consecutive")
@@ -252,6 +283,8 @@ def load(
         IndexError,
         EOFError,
         ImportError,
+        RecursionError,
+        NotImplementedError,
         MemoryError,
         pickle.UnpicklingError,
         OSError,

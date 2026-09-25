@@ -357,3 +357,46 @@ async def test_counters_track_every_outcome(
     assert counters.accepted_status == 1
     assert counters.rejected == 1
     assert counters.rejections_by_reason == {"topic_invalid": 1}
+
+
+async def test_shadow_scores_but_stores_and_broadcasts_nothing(
+    settings: Settings,
+    uow_factory: SqlUnitOfWorkFactory,
+    clock: FixedClock,
+    publisher: RecordingPublisher,
+    client: FakeMqttClient,
+) -> None:
+    from powerguard.inference.shadow import ShadowCounters, ShadowInference
+
+    flagging = FakeInference(
+        AnomalyVerdict(
+            method=AnomalyMethod.ISOLATION_FOREST,
+            reasons=("multivariate_outlier",),
+            score=0.999,
+            model_version="v1",
+        )
+    )
+    counters = ShadowCounters()
+    service = IngestionService(
+        settings=settings,
+        uow_factory=uow_factory,
+        clock=clock,
+        inference=ShadowInference(flagging, counters=counters),
+        publisher=publisher,
+    )
+
+    for seq in (1, 3):
+        message = client.telemetry_message(DEVICE, telemetry_bytes(seq=seq), clock.now())
+        result = await service.handle(message)
+        assert result.outcome == "accepted"
+        assert result.anomaly_id is None
+        clock.advance(2)
+
+    # The real engine was driven and would have flagged both readings ...
+    assert flagging.calls == 2
+    assert counters.would_flag == 2
+    # ... but no anomaly row exists and no anomaly frame was published.
+    assert publisher.kinds == ["telemetry", "telemetry"]
+    with uow_factory() as uow:
+        assert len(uow.anomalies.history(DEVICE, limit=10).items) == 0
+    assert service.counters.anomalies_detected == 0

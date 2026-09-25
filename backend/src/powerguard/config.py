@@ -23,6 +23,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 AppEnv = Literal["development", "test", "production"]
 LogFormat = Literal["console", "json"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+#: `shadow` observes without alerting; `active` lets verdicts reach the system.
+InferenceMode = Literal["shadow", "active"]
 
 # Repository-local default for the runtime database file (git-ignored).
 _DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "powerguard.db"
@@ -127,6 +129,30 @@ class Settings(BaseSettings):
     stale_after_s: float = Field(default=15.0, gt=0.0, le=3600.0)
     stale_scan_interval_s: float = Field(default=2.0, gt=0.0, le=3600.0)
 
+    # --- Anomaly inference ------------------------------------------------
+    # Off by default, and deliberately so: no model is promoted, and a
+    # dashboard that says "detection ready" without a validated model is worse
+    # than one that says nothing. Turning this off never affects ingestion,
+    # MQTT, history or the API -- only the anomaly step is skipped.
+    inference_enabled: bool = False
+    #: Directory holding `model.joblib` + `metadata.json`. Local paths only;
+    #: nothing here fetches an artifact from anywhere.
+    inference_artifact_dir: Path | None = None
+    #: The one device this artifact may score. Required when enabled, because
+    #: an artifact answering about another device's load is answering about a
+    #: different world.
+    inference_device_id: str | None = None
+    #: The regime the artifact was trained under. Required when enabled: a
+    #: missing fingerprint must never be treated as "matches anything".
+    inference_calibration_fingerprint: str | None = None
+    #: `shadow` scores and logs but emits no verdict and reports readiness as
+    #: `unavailable`; `active` lets verdicts through. Shadow is the default so
+    #: that enabling inference cannot, by itself, start raising alerts.
+    inference_mode: InferenceMode = "shadow"
+    #: Refuse any artifact whose metadata is not `validated_real_data`.
+    #: Turning this off is a development affordance and is logged as one.
+    inference_require_validated: bool = True
+
     # --- WebSocket --------------------------------------------------------
     ws_max_connections: int = Field(default=100, ge=1, le=10_000)
     ws_queue_size: int = Field(default=64, ge=1, le=10_000)
@@ -219,6 +245,12 @@ class Settings(BaseSettings):
             raise ValueError("STALE_SCAN_INTERVAL_S must not exceed STALE_AFTER_S")
         if self.ws_ping_timeout_s < self.ws_ping_interval_s:
             raise ValueError("WS_PING_TIMEOUT_S must be at least WS_PING_INTERVAL_S")
+        # Inference settings are deliberately NOT validated here. Enabling it
+        # without an artifact, a device or a calibration regime is refused, but
+        # by `inference.loader.build_inference`, which degrades to a logged
+        # `unavailable`. Raising here would stop ingestion, REST and the
+        # WebSocket from starting over an optional model -- the one failure an
+        # absent or misconfigured model must never cause.
         return self
 
     # ------------------------------------------------------------------

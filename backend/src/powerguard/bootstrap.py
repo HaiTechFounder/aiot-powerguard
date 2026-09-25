@@ -23,7 +23,7 @@ from powerguard.device_status import DeviceStatusTracker
 from powerguard.domain.entities import Device, DeviceStatus
 from powerguard.domain.ports import Clock, InferenceEngine
 from powerguard.domain.services import SystemClock
-from powerguard.inference.unavailable import UnavailableInference
+from powerguard.inference.loader import InferenceLoad, build_inference
 from powerguard.mqtt.client import MqttCounters, PahoMqttAdapter, TransportFactory
 from powerguard.mqtt.ingestion import IngestionService
 from powerguard.mqtt.ports import AckDecision, InboundMessage
@@ -59,6 +59,10 @@ class Container:
     uow_factory: SqlUnitOfWorkFactory
     clock: Clock
     inference: InferenceEngine
+    #: How the anomaly engine was wired, and why. Diagnostics only: the health
+    #: endpoint still reports `inference.readiness()`, which shadow keeps at
+    #: `unavailable` so no status field can overstate what is running.
+    inference_load: InferenceLoad
     hub: EventHub
     ingestion: IngestionService
     status: DeviceStatusTracker
@@ -158,7 +162,11 @@ async def build_container(
     session_factory = create_session_factory(engine)
     uow_factory = SqlUnitOfWorkFactory(session_factory)
     clock = SystemClock()
-    inference = UnavailableInference()
+    # Opt-in, validated, and shadow-by-default. A refusal here is a logged
+    # `UnavailableInference`, never an exception: ingestion, MQTT, history and
+    # the dashboard must come up whether or not a model does.
+    inference_load = build_inference(settings)
+    inference = inference_load.engine
     hub = EventHub(
         clock=clock,
         max_connections=settings.ws_max_connections,
@@ -180,6 +188,7 @@ async def build_container(
         uow_factory=uow_factory,
         clock=clock,
         inference=inference,
+        inference_load=inference_load,
         hub=hub,
         ingestion=ingestion,
         status=status,

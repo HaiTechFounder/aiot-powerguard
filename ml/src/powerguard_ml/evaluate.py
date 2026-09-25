@@ -23,9 +23,10 @@ import numpy as np
 
 from powerguard_ml import dataset, synthetic
 from powerguard_ml.artifact import load as load_artifact
+from powerguard_ml.artifact import stride_of
 from powerguard_ml.features import build_matrix
 from powerguard_ml.model import TrainedModel
-from powerguard_ml.preprocess import prepare
+from powerguard_ml.preprocess import EXPECTED_SEQ_STRIDE, prepare
 
 #: Enough operator-approved real samples to even consider promotion.
 REAL_SAMPLE_GATE = 1_000
@@ -86,8 +87,14 @@ def evaluate_model(
     model_version: str,
     provenance: str,
     scenarios: tuple[synthetic.Scenario, ...] = (),
+    expected_seq_stride: int = EXPECTED_SEQ_STRIDE,
 ) -> Report:
-    prepared = prepare(rows, device_id=device_id if provenance == "real_export" else None)
+    # Windows are cut with the artifact's own stride, exactly as training cut them.
+    prepared = prepare(
+        rows,
+        device_id=device_id if provenance == "real_export" else None,
+        expected_seq_stride=expected_seq_stride,
+    )
     matrix, anchors = build_matrix(prepared.segments)
     if matrix.size == 0:
         raise ValueError("no complete window in the evaluation dataset")
@@ -182,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             model_version=str(metadata.get("model_version", "")),
             provenance=provenance,
             scenarios=scenarios,
+            expected_seq_stride=stride_of(metadata),
         )
     except ValueError as failure:
         print(f"evaluation failed: {failure}", file=sys.stderr)

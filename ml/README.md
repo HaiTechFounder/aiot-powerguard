@@ -17,9 +17,12 @@ flag rate measured on it is a statement about the generator, not about a real
 load. Every report prints `data_quality: quality_not_established` for this
 reason.
 
-**Production calibration, evaluation and promotion remain DEFERRED** until at
-least 1,000 operator-approved real samples from a single calibration regime
-exist. Finishing this prototype does not waive that gate.
+**Production calibration, evaluation and promotion remain DATA_GATE_BLOCKED**
+until at least 1,000 operator-approved normal samples from a single attested
+calibration regime, witnessed boot IDs and labelled abnormal events exist.
+Finishing this prototype does not waive that gate; see
+[`REAL_DATA_GATE.md`](REAL_DATA_GATE.md) for the status and the capture
+procedure, and run `python -m powerguard_ml.gate` to see what is missing.
 
 ## Setup
 
@@ -56,7 +59,7 @@ quantiles — plus the caveat above, in the output rather than in a footnote.
 ## Checks
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest        # 71 tests
+.\.venv\Scripts\python.exe -m pytest        # 187 tests
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy          # strict
 ```
@@ -79,9 +82,14 @@ two different sensors. Rows with `sensor_status != "ok"` or non-finite values
 are dropped, duplicates by `id` are dropped, and rows are ordered by
 `received_at` with `id` as the tie-break — the backend's own order (ADR-006).
 
-The remainder is cut into **contiguous segments**. A reboot, a sequence hole,
-or a time gap over twice the 2-second cadence ends a segment, and a segment
-shorter than one window is dropped rather than padded. The train/calibration
+The remainder is cut into **contiguous segments** by `preprocess.is_contiguous`:
+a reboot, a `seq` advance outside `1..expected_seq_stride`, or a time gap that
+is zero or over twice the 2-second cadence ends a segment, and a segment
+shorter than one window is dropped rather than padded. The firmware samples
+every second and publishes every two, so a healthy stream advances `seq` by 2;
+`EXPECTED_SEQ_STRIDE = 2` is the default, a manifest may declare another value,
+and it is bounded to `1..8` so it can never excuse a lost reading. Rows
+labelled abnormal are held out of training. The train/calibration
 split is by time: every training row precedes every calibration row.
 
 ## Features — `powerguard_features_v1`
@@ -116,14 +124,16 @@ is noise.
 carrying the model version, device, creation time, feature version and order,
 window, cadence, threshold, consecutive count, calibration score distribution,
 training interval and counts, library versions, shunt resistance, calibration
-fingerprint, `data_quality`, `data_provenance`, and the SHA-256 of
-`model.joblib`.
+fingerprint, `expected_seq_stride`, `data_quality`, `data_provenance`, and the
+SHA-256 of `model.joblib`.
 
 `joblib.load` executes what it unpickles, so an artifact is code, not a
 document. Loading validates metadata **before** opening the pickle and refuses
 on: an unknown metadata version, a different feature version or feature order,
-a different window, a foreign device, a different calibration regime, an empty
-calibration distribution, a missing file, or a checksum mismatch. Nothing here
+a different window, a missing or out-of-range `expected_seq_stride` (a legacy
+artifact is refused, never given a guessed stride), a foreign device, a
+different calibration regime, an empty calibration distribution, metadata that
+is not UTF-8 JSON, a missing file, or a checksum mismatch. Nothing here
 downloads an artifact.
 
 ## Backend compatibility
@@ -132,16 +142,19 @@ downloads an artifact.
 `InferenceEngine` port: `readiness() -> "ready" | "unavailable"` and
 `evaluate(Telemetry) -> AnomalyVerdict | None`. It emits
 `AnomalyMethod.ISOLATION_FOREST` with reason `multivariate_outlier` and the
-normalised score. `bootstrap.py` constructs `UnavailableInference()` today and
-would construct this instead; **no approved API, MQTT or database contract
-changes.**
+normalised score. The backend's `inference/loader.py` constructs it only when
+`POWERGUARD_INFERENCE_ENABLED=true`, the artifact is `validated_real_data`, and
+device, regime and checksum match; by default it runs wrapped in shadow mode.
+Otherwise the backend keeps `UnavailableInference`. **No approved API, MQTT or
+database contract changes.**
 
 A missing, corrupt, mismatched or untrusted artifact leaves readiness at
 `unavailable` and produces no verdict — ingestion and rules continue untouched.
 Taking the pipeline down because a model is absent would be a worse failure
 than having no model. The adapter keeps a per-device window and drops it on
-reboot, a sequence gap, a time gap, or a rejected reading; until 30 new
-contiguous samples arrive it returns `None` — silence, not a guess.
+exactly what training cuts on — reboot, a `seq` advance outside the artifact's
+declared stride, a time gap, or a rejected reading; until 30 new contiguous
+samples arrive it returns `None` — silence, not a guess.
 
 Compatibility tests import the backend's real `Telemetry`, `AnomalyVerdict` and
 `InferenceEngine` from `backend/src`, so a contract change breaks them here
@@ -156,9 +169,20 @@ reported rate is therefore not a false-positive rate, on synthetic data or
 otherwise — it is a count, and computing a false-positive rate needs
 operator-approved normal data that does not yet exist.
 
+## Real-data gate
+
+```powershell
+python -m powerguard_ml.gate --database ..\backend\data\powerguard.db [--manifest review.json]
+```
+
+Reads only. Prints `DATA_GATE_PASSED` or `DATA_GATE_BLOCKED` with every reason
+and an operator checklist; exits `3` when blocked. `train --promote` applies the
+same gate and has no override; `train --synthetic ... --promote` is refused
+outright.
+
 ## NOT_RUN
 
 - Training or evaluation on real device data.
 - Any measurement of real-world recall or false-positive rate.
-- Model promotion into a running backend.
+- A shadow run or model activation in a running backend.
 - Hardware-in-the-loop verification.

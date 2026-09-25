@@ -26,7 +26,7 @@ def trained_artifact(tmp_path: Path):
     from powerguard_ml.artifact import Metadata, now_utc, save
     from powerguard_ml.features import build_matrix
     from powerguard_ml.model import train
-    from powerguard_ml.preprocess import prepare, time_split
+    from powerguard_ml.preprocess import EXPECTED_SEQ_STRIDE, prepare, time_split
     from powerguard_ml.synthetic import CALIBRATION_FINGERPRINT, DEFAULT_DEVICE, training_set
 
     rows = training_set(600)
@@ -42,6 +42,7 @@ def trained_artifact(tmp_path: Path):
             model_version="v1",
             device_id=DEFAULT_DEVICE,
             created_at=now_utc(),
+            expected_seq_stride=EXPECTED_SEQ_STRIDE,
             calibration_fingerprint=CALIBRATION_FINGERPRINT,
         ),
         directory,
