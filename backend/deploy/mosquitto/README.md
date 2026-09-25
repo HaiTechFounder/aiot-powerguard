@@ -109,3 +109,60 @@ lists it literally, so a new device id needs a new pair of lines.
 ## Running the smoke test against it
 
 See [`../../tests/integration/README.md`](../../tests/integration/README.md).
+
+## Where the broker is reachable from
+
+The published port always carries an explicit host bind address, and it
+defaults to loopback:
+
+```yaml
+- "${POWERGUARD_MQTT_BIND:-127.0.0.1}:1883:1883"
+```
+
+A bare `1883:1883` would publish on **every** interface the host has. This
+broker has no TLS, so on a laptop that means any network it joins, including
+untrusted Wi-Fi. That is why the address is never left implicit.
+
+### Letting an ESP8266 reach it
+
+A device is not on loopback, so a hardware capture needs LAN reach. That is an
+explicit, temporary act:
+
+```powershell
+# The host's own LAN address - one named interface, not all of them.
+$env:POWERGUARD_MQTT_BIND = "192.168.1.42"
+docker compose up -d mosquitto
+```
+
+Unset it (or restart the shell) and the broker returns to loopback.
+
+### Assumptions this relies on
+
+Exposing an unencrypted broker on a LAN is only acceptable while all of these
+hold. If any one of them does not, do not set `POWERGUARD_MQTT_BIND`.
+
+- **The LAN is trusted and private** - a home or lab network you control, not a
+  cafe, hotel, campus, coworking or guest network.
+- **The host firewall allows 1883 inbound from that subnet only.** Windows
+  Defender Firewall prompts on first bind; choose *Private networks* and deny
+  public. To be explicit:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "PowerGuard MQTT (LAN capture)" `
+    -Direction Inbound -Protocol TCP -LocalPort 1883 `
+    -RemoteAddress 192.168.1.0/24 -Profile Private -Action Allow
+  ```
+
+  Remove the rule when the capture is finished.
+- **No port forwarding.** Nothing on the router may expose 1883 to the
+  internet. This broker must never be reachable from outside the LAN.
+- **Authentication and the ACL stay on.** `allow_anonymous false`, a real
+  `passwd`, and per-user topic rules (see below) apply on every interface -
+  binding wider never relaxes them.
+- **Credentials are still in the clear.** MQTT without TLS sends the username
+  and password in plaintext; anyone on that LAN who is listening can read them.
+  Use a password that protects nothing else, and rotate it after the capture.
+- **It is temporary.** Bind to the LAN for the capture, then put it back.
+
+TLS is out of scope for this local MVP. A broker that needs to stay reachable
+is a broker that needs certificates, and that is a separate piece of work.

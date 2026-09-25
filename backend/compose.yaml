@@ -13,10 +13,22 @@ services:
     container_name: powerguard-mosquitto
     command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
     ports:
-      # Published on loopback only: this broker has no TLS and is not for a
-      # shared network. The in-container listener binds 0.0.0.0 so that this
-      # mapping can reach it.
-      - "1883:1883"
+      # The host bind address is always explicit, and defaults to loopback.
+      #
+      # A bare "1883:1883" publishes on *every* interface the host has, which
+      # for a broker with no TLS means any network it is attached to, including
+      # untrusted Wi-Fi. That is never the right default.
+      #
+      # An ESP8266 is a separate device and does need LAN reach, so that case is
+      # an explicit act: set POWERGUARD_MQTT_BIND to the host's own LAN address
+      # (for example 192.168.1.42) for the duration of a capture. One named
+      # interface, not all of them. Authentication and the ACL stay on either
+      # way; see deploy/mosquitto/README.md for the firewall assumptions.
+      #
+      # The in-container listener binds 0.0.0.0 because it binds inside the
+      # container's network namespace; a loopback bind there would be
+      # unreachable through any published port.
+      - "${POWERGUARD_MQTT_BIND:-127.0.0.1}:1883:1883"
     volumes:
       - ./deploy/mosquitto/mosquitto.docker.conf:/mosquitto/config/mosquitto.conf:ro
       - ./deploy/mosquitto/acl:/mosquitto/config/acl:ro

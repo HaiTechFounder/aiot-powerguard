@@ -76,7 +76,15 @@ if (Test-Path $mlPy) {
 # The ESP8266 build is the real gate. `pio test -e native` additionally needs a
 # host g++ on a path WITHOUT spaces; where that is not the case it is reported
 # NOT_RUN rather than skipped silently.
-$hasPio = [bool](Get-Command pio -ErrorAction SilentlyContinue)
+# PlatformIO's installer puts pio in its own penv and often not on PATH.
+$pio = Get-Command pio -ErrorAction SilentlyContinue | Select-Object -First 1
+$pioPath = $null
+if ($pio) { $pioPath = $pio.Source }
+if (-not $pioPath) {
+    $penvPio = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\pio.exe"
+    if (Test-Path -LiteralPath $penvPio) { $pioPath = $penvPio }
+}
+$hasPio = [bool]$pioPath
 if (-not $hasPio) {
     python -c "import platformio" 2>$null
     $hasPioModule = $LASTEXITCODE -eq 0
@@ -85,11 +93,26 @@ if (-not $hasPio) {
 }
 
 if ($hasPio) {
-    Invoke-Gate "firmware build (nodemcuv2)" "firmware" { pio run -e nodemcuv2 }
+    Invoke-Gate "firmware build (nodemcuv2)" "firmware" { & $pioPath run -e nodemcuv2 }
 } elseif ($hasPioModule) {
     Invoke-Gate "firmware build (nodemcuv2)" "firmware" { python -m platformio run -e nodemcuv2 }
 } else {
     Write-Host "PlatformIO not installed - firmware build NOT_RUN" -ForegroundColor Yellow
+}
+
+# -- Windows launcher --------------------------------------------------------
+# Parser, hidden control characters, encoding, and the run-state helpers. Run
+# under Windows PowerShell 5.1 always, and under PowerShell 7 when installed,
+# because each shell parses with its own grammar.
+Invoke-Gate "launcher checks (Windows PowerShell 5.1)" "." {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\test_launcher.ps1
+}
+if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+    Invoke-Gate "launcher checks (PowerShell 7)" "." {
+        pwsh -NoProfile -File scripts/test_launcher.ps1
+    }
+} else {
+    Write-Host "pwsh not installed - launcher checks under PowerShell 7 NOT_RUN" -ForegroundColor Yellow
 }
 
 # -- summary ---------------------------------------------------------------

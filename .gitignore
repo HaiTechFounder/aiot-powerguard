@@ -23,3 +23,5 @@ Thumbs.db
 
 # Logs
 *.log
+# Local run artefacts from START_POWERGUARD.cmd
+logs/

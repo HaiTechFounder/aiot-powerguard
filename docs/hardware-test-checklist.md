@@ -1,8 +1,15 @@
 # Phase 02 — Hardware test checklist
 
-Everything below is **NOT_RUN**. No NodeMCU was connected, no `secrets.h` existed and no MQTT broker
-was reachable during Phase 02 development, so none of it may be reported as passing. Automated
-evidence (build, static analysis, 51 host unit tests) does not substitute for any line here.
+Everything below is **NOT_RUN** until a results file says otherwise. No NodeMCU was connected, no
+`secrets.h` existed and no MQTT broker was reachable during Phase 02 development, so none of it may be
+reported as passing. Automated evidence (build, static analysis, host unit tests) does not substitute
+for any line here.
+
+**Status as of 2026-09-25: needs confirmation.** Commit `ee45e11` is titled "Complete hardware E2E
+validation and MAX7219 display", but it contains firmware code and host tests only. No serial log,
+broker capture or filled-in results file is stored in the repository, so no line below can be marked
+as passing on the strength of that commit. If the bench run happened, record it as described at the
+end of this file.
 
 ## Prerequisites
 
@@ -38,7 +45,8 @@ operating current.
 
 - [ ] 30-minute continuous run at the default 2 s telemetry cadence.
 - [ ] Free heap is stable across the run (no downward trend).
-- [ ] `seq` increases monotonically with no gaps other than rejected samples.
+- [ ] `seq` advances by exactly **2** between published rows (one sample is read and not
+      published per 2 s deadline); a wider advance is a missed publish and must be explained.
 - [ ] No watchdog reset in the serial log.
 
 ## Connectivity
@@ -61,8 +69,16 @@ Capture with `mosquitto_sub -h <broker> -u <user> -P <pass> -t 'powerguard/v1/de
 - [ ] `sampled_at` is `null` (no NTP in Phase 02).
 - [ ] Redact credentials before attaching any capture to a report.
 
+## MAX7219 local display
+
+- [ ] The panel lights at boot and shows the newest validated reading, refreshing every 500 ms.
+- [ ] Unplugging the INA226 turns the readout to dashes within about 5 s (`kSampleStaleAfterMs`).
+- [ ] Wi-Fi or broker loss does not freeze or blank the panel (it depends on neither).
+- [ ] No watchdog reset or telemetry-cadence change with the panel connected.
+
 ## Recording results
 
-Write outcomes into `.ai_workspace/claude/phases/phase-02-firmware/HARDWARE_TEST_RESULTS.md` with the
-date, firmware version, git revision and raw serial or `mosquitto_sub` excerpts. A test that was not
-run is recorded as `NOT_RUN`, never as passing.
+Write outcomes into `docs/hardware-test-results.md` (tracked, so the evidence travels with the code;
+`.ai_workspace/` is Git-ignored and is not evidence) with the date, the person who ran it, firmware
+version, git revision, shunt fitted, and raw serial or `mosquitto_sub` excerpts with credentials
+redacted. A test that was not run is recorded as `NOT_RUN`, never as passing.

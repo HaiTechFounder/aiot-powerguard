@@ -32,12 +32,22 @@ a sensor limit, nothing more.
 | I2C SDA | `D2` | GPIO4 |
 | INA226 VCC | `3V3` | — |
 | INA226 GND | `GND` | — |
+| MAX7219 DIN | `D5` | GPIO14 |
+| MAX7219 LOAD / CS | `D6` | GPIO12 |
+| MAX7219 CLK | `D7` | GPIO13 |
 
 - INA226 I2C address: `0x40` (A0/A1 to GND).
 - INA226 shunt is wired in the **total system current** path; `VBUS` sees the 2S 18650 rail
   (8.4 V maximum fully charged).
 - Manufacturer/die ID are verified at boot (`0x5449` / `0x2260`). Clone boards that report other IDs
   can be accepted with `-DPOWERGUARD_REQUIRE_SENSOR_IDENTITY=0`, but confirm the part first.
+- The MAX7219 8-digit panel is a **local readout only** (`display.cpp`, bit-banged, no library): it
+  shows the newest validated sample, shows dashes once that sample is stale, and publishes nothing.
+  Its formatting logic (`display_format.cpp`) is covered by the host tests; the panel itself is
+  hardware evidence.
+- `seq` is consumed on every sensor read (1 s) and one sample is published per telemetry deadline
+  (2 s), so stored rows advance `seq` by **2**. The ML pipeline treats an advance of 1..2 as
+  contiguous and anything wider as a missing reading.
 
 ## Setup
 
@@ -84,7 +94,8 @@ acquisition, sequence numbering and retry. `wifi_manager.cpp` and `mqtt_manager.
 native build: they depend on the ESP8266 Wi-Fi stack and a live broker, so their behaviour remains
 hardware and network evidence (see [`../docs/hardware-test-checklist.md`](../docs/hardware-test-checklist.md)).
 
-The suite has 51 cases covering configuration validation, device-ID and SemVer grammar, electrical
+The suite (60 `RUN_TEST` cases in `test/test_native/test_main.cpp` as of 2026-09-25, including the
+MAX7219 formatting cases) covers configuration validation, device-ID and SemVer grammar, electrical
 validation, energy integration and its gap handling, serial formatting and rate limiting, the telemetry
 and status payloads parsed as JSON, the bounded queue, the backoff schedule, the deadline scheduler, and the sensor bring-up/acquisition path through the INA226 fake.
 

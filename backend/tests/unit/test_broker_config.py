@@ -74,7 +74,46 @@ def test_only_the_mqtt_port_is_published() -> None:
     compose = read(COMPOSE)
     published = re.findall(r'^\s*-\s*"([^"]+:\d+)"', compose, re.MULTILINE)
 
-    assert published == [f"127.0.0.1:{MQTT_PORT}:{MQTT_PORT}"]
+    assert len(published) == 1
+    assert published[0].endswith(f":{MQTT_PORT}:{MQTT_PORT}")
+
+
+def test_the_published_port_always_names_a_bind_address() -> None:
+    """A bare "1883:1883" is the defect, not a shorthand.
+
+    Without a host address Docker publishes on every interface, and this broker
+    has no TLS. The mapping must always say which interface it means.
+    """
+    compose = read(COMPOSE)
+    published = re.findall(r'^\s*-\s*"([^"]+:\d+)"', compose, re.MULTILINE)
+
+    host = published[0].rsplit(f":{MQTT_PORT}:{MQTT_PORT}", 1)[0]
+    assert host, "the published port must carry an explicit host bind address"
+
+
+def test_the_bind_address_defaults_to_loopback() -> None:
+    """LAN exposure is opt-in, per capture, and never the default.
+
+    An ESP8266 needs LAN reach to publish, so `POWERGUARD_MQTT_BIND` exists --
+    but it takes one named host address, and leaving it unset keeps the broker
+    on loopback.
+    """
+    compose = read(COMPOSE)
+    published = re.findall(r'^\s*-\s*"([^"]+:\d+)"', compose, re.MULTILINE)
+
+    host = published[0].rsplit(f":{MQTT_PORT}:{MQTT_PORT}", 1)[0]
+    assert host == "${POWERGUARD_MQTT_BIND:-127.0.0.1}"
+    # The default half of the substitution is what applies when nobody sets it.
+    assert host.endswith(":-127.0.0.1}")
+
+
+def test_lan_exposure_is_documented_with_its_assumptions() -> None:
+    readme = read(BROKER_README)
+    assert "POWERGUARD_MQTT_BIND" in readme
+    # Exposing an unencrypted broker is a decision with conditions attached;
+    # the document that enables it has to state them.
+    assert "firewall" in readme.lower()
+    assert "TLS" in readme
 
 
 def test_no_websocket_listener_is_configured_or_claimed() -> None:
