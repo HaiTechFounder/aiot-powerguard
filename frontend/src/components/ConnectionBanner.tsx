@@ -36,7 +36,7 @@ function ConnectionLine({
         Live connection lost — reconnecting
         {seconds ? ` in ${seconds}s` : ""} (attempt {connection.attempt}). Readings already loaded
         are kept.
-        <button type="button" className="button button--inline" onClick={onRetry}>
+        <button type="button" className="button button--ghost button--inline" onClick={onRetry}>
           Retry now
         </button>
       </div>
@@ -51,9 +51,13 @@ function ConnectionLine({
     );
   }
 
+  // Transport only. An open socket says the backend *would* deliver a frame,
+  // never that the device is publishing one — that verdict is the live badge's,
+  // and conflating the two is what made this banner claim "Live" over day-old
+  // data. Green therefore belongs to the badge; this stays neutral.
   return (
-    <div className="banner banner--ok" role="status" data-testid="connection-banner">
-      Live
+    <div className="banner banner--transport" role="status" data-testid="connection-banner">
+      WebSocket connected
     </div>
   );
 }
@@ -79,7 +83,7 @@ function HistoryLine({
       <div className="banner banner--warn" role="status" data-testid="history-banner">
         The readings missed while offline could not be fetched, so this chart may have a gap.
         Retrying automatically.
-        <button type="button" className="button button--inline" onClick={onRetry}>
+        <button type="button" className="button button--ghost button--inline" onClick={onRetry}>
           Retry now
         </button>
       </div>

@@ -19,6 +19,7 @@ import { useDeviceStream } from "../../../src/realtime/useDeviceStream";
 import { DEVICE_ID, anomaly, stamp, telemetry, telemetryPage } from "../../builders";
 import { FakeClock, FakeSocket } from "../../fakeSocket";
 import { HistoryServer } from "../../historyServer";
+import { settle } from "../../settle";
 
 function frame(row: TelemetryDto): DeviceEvent {
   return { schema_version: 1, type: "telemetry", emitted_at: row.received_at, data: row };
@@ -210,6 +211,7 @@ describe("the live tail", () => {
     });
 
     expect(result.current.status).toBe("stale");
+    await settle();
   });
 
   it("marks the reading an anomaly belongs to and lists the verdict", async () => {
@@ -231,6 +233,7 @@ describe("the live tail", () => {
 
     expect(result.current.anomalies.map((item) => item.id)).toEqual([11]);
     expect(result.current.series[1]?.anomaly?.id).toBe(11);
+    await settle();
   });
 });
 
@@ -520,6 +523,7 @@ describe("a catch-up that fails", () => {
 
     expect(result.current.series).toHaveLength(3);
     expect(result.current.connection.phase).toBe("reconnecting");
+    await settle();
   });
 });
 
@@ -537,6 +541,7 @@ describe("one stream owns one socket", () => {
 
     expect(clock.pendingCount).toBe(0);
     expect(liveSockets()).toHaveLength(1);
+    await settle();
   });
 
   it("supersedes a connection that has not opened yet", async () => {
@@ -548,6 +553,7 @@ describe("one stream owns one socket", () => {
 
     expect(connecting.closed).toBe(true);
     expect(liveSockets()).toHaveLength(1);
+    await settle();
   });
 
   it("does not storm the backend when the button is pressed repeatedly", async () => {
@@ -564,6 +570,7 @@ describe("one stream owns one socket", () => {
     expect(liveSockets()).toHaveLength(1);
     expect(FakeSocket.instances).toHaveLength(2);
     expect(FakeSocket.instances.filter((socket) => socket.closed)).toHaveLength(1);
+    await settle();
   });
 
   it("does not replace a healthy socket on Retry Now", async () => {
@@ -577,6 +584,7 @@ describe("one stream owns one socket", () => {
 
     expect(FakeSocket.instances).toHaveLength(1);
     expect(live.closed).toBe(false);
+    await settle();
   });
 
   it("ignores a frame from the socket a manual retry replaced", async () => {
@@ -596,6 +604,7 @@ describe("one stream owns one socket", () => {
 
     expect(result.current.series.map((row) => row.id)).toEqual([1]);
     expect(liveSockets()).toHaveLength(1);
+    await settle();
   });
 
   it("leaves nothing behind when the view unmounts mid-retry", async () => {

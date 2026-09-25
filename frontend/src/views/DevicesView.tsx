@@ -29,11 +29,20 @@ function DeviceRow({ device }: { device: DeviceDto }): ReactNode {
         </div>
       </dl>
       {latest ? (
-        <div className="device-card__latest">
-          <span>{formatMetric(latest.voltage_v, "voltage")}</span>
-          <span>{formatMetric(latest.current_a, "current")}</span>
-          <span>{formatMetric(latest.power_w, "power")}</span>
-        </div>
+        <dl className="device-card__latest">
+          <div className="device-card__reading">
+            <dt className="device-card__reading-label">Voltage</dt>
+            <dd>{formatMetric(latest.voltage_v, "voltage")}</dd>
+          </div>
+          <div className="device-card__reading">
+            <dt className="device-card__reading-label">Current</dt>
+            <dd>{formatMetric(latest.current_a, "current")}</dd>
+          </div>
+          <div className="device-card__reading">
+            <dt className="device-card__reading-label">Power</dt>
+            <dd>{formatMetric(latest.power_w, "power")}</dd>
+          </div>
+        </dl>
       ) : (
         <p className="device-card__latest device-card__latest--empty">No readings yet</p>
       )}
@@ -60,13 +69,21 @@ export function DevicesView(): ReactNode {
   }
 
   return (
-    <section>
-      <h1 className="page-title">Devices</h1>
+    <div className="stack">
+      <div className="page-head">
+        <div>
+          <h2 className="page-title">Overview</h2>
+          <p className="page-subtitle">
+            {items.length} registered {items.length === 1 ? "device" : "devices"} · select one to
+            open its dashboard
+          </p>
+        </div>
+      </div>
       <ul className="device-list">
         {items.map((device) => (
           <DeviceRow key={device.id} device={device} />
         ))}
       </ul>
-    </section>
+    </div>
   );
 }

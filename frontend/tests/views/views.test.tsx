@@ -6,7 +6,7 @@
  * reporting a clean bill of health from something that is switched off.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
@@ -18,7 +18,15 @@ import { AnomalyList } from "../../src/components/AnomalyList";
 import { AnomaliesView } from "../../src/views/AnomaliesView";
 import { DeviceDetailView } from "../../src/views/DeviceDetailView";
 import { DevicesView } from "../../src/views/DevicesView";
-import { DEVICE_ID, anomaly, device, health, telemetryPage } from "../builders";
+import {
+  BOOT_ID,
+  DEVICE_ID,
+  anomaly,
+  device,
+  health,
+  telemetry,
+  telemetryPage,
+} from "../builders";
 import { FakeSocket } from "../fakeSocket";
 
 const server = setupServer();
@@ -186,16 +194,20 @@ describe("the device detail view", () => {
     expect(screen.getByTestId("metric-voltage")).toBeInTheDocument();
   });
 
-  it("shows the connection as live once the socket opens", async () => {
+  // The banner reports the transport and nothing else. It used to say "Live",
+  // which is a claim about the device that an open socket cannot support.
+  it("reports the socket as connected, without claiming the device is live", async () => {
     server.use(...baseHandlers());
     renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
 
-    FakeSocket.latest.open();
+    act(() => FakeSocket.latest.open());
 
     await waitFor(() =>
-      expect(screen.getByTestId("connection-banner")).toHaveTextContent("Live"),
+      expect(screen.getByTestId("connection-banner")).toHaveTextContent("WebSocket connected"),
     );
+    // The fixture's newest reading is months old, so the device verdict is not Live.
+    expect(screen.getByTestId("live-state")).not.toHaveTextContent("Live");
   });
 
   it("says live updates stopped, and keeps the history, on a permanent close", async () => {
@@ -203,8 +215,10 @@ describe("the device detail view", () => {
     renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
 
-    FakeSocket.latest.open();
-    FakeSocket.latest.serverClose(4404);
+    act(() => {
+      FakeSocket.latest.open();
+      FakeSocket.latest.serverClose(4404);
+    });
 
     await waitFor(() =>
       expect(screen.getByTestId("connection-banner")).toHaveTextContent(
@@ -383,6 +397,274 @@ describe("the health header", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("health-backend")).toHaveTextContent("Backend unreachable"),
+    );
+  });
+});
+
+describe("the shell navigation", () => {
+  it("offers only the three routes that exist, and disables the device-scoped two", async () => {
+    server.use(...baseHandlers());
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("sidebar")).toBeInTheDocument());
+    const nav = screen.getByTestId("sidebar");
+    // Overview is reachable without a device; the other two are not, so they
+    // are inert text rather than links to a URL that would not resolve.
+    expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Devices" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Anomaly History" })).not.toBeInTheDocument();
+    expect(nav).toHaveTextContent("Devices");
+    expect(nav).toHaveTextContent("Anomaly History");
+  });
+
+  it("loads the chart dashboard on demand and still renders it through the shell", async () => {
+    server.use(...baseHandlers());
+    render(
+      <MemoryRouter initialEntries={[`/devices/${DEVICE_ID}`]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    // The lazily loaded route resolves to the real view, not a stuck fallback.
+    await waitFor(() => expect(screen.getByTestId("live-state")).toBeInTheDocument());
+    expect(screen.queryByText("Loading dashboard…")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("chart-voltage")).toBeInTheDocument());
+  });
+
+  it("links the device-scoped entries once a device is in the route", async () => {
+    server.use(...baseHandlers());
+    render(
+      <MemoryRouter initialEntries={[`/devices/${DEVICE_ID}`]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "Anomaly History" })).toHaveAttribute(
+        "href",
+        `/devices/${DEVICE_ID}/anomalies`,
+      ),
+    );
+    expect(screen.getByRole("link", { name: "Devices" })).toHaveAttribute(
+      "href",
+      `/devices/${DEVICE_ID}`,
+    );
+  });
+});
+
+describe("the device information rail", () => {
+  const path = `/devices/${DEVICE_ID}`;
+
+  it("shows the properties the API actually sends, and nothing else", async () => {
+    server.use(...baseHandlers());
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() => expect(screen.getByTestId("device-info")).toBeInTheDocument());
+    const rail = screen.getByTestId("device-info");
+    expect(rail).toHaveTextContent("0.1.0");
+
+    const sensor = screen.getByTestId("sensor-info");
+    expect(sensor).toHaveTextContent("ok");
+    expect(sensor).toHaveTextContent(BOOT_ID);
+    // `sampled_at` is null until the firmware has a clock; it says so.
+    expect(sensor).toHaveTextContent("not reported");
+
+    // No invented telemetry about the device itself.
+    const shown = `${rail.textContent ?? ""}${sensor.textContent ?? ""}`;
+    expect(shown).not.toMatch(/RSSI|uptime|IP address/i);
+  });
+
+  it("says the registry could not be read instead of inventing properties", async () => {
+    server.use(
+      http.get("*/api/v1/devices", () => envelope("HTTP_ERROR", "registry down", 503)),
+      ...baseHandlers(),
+    );
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("device-props-unavailable")).toBeInTheDocument(),
+    );
+    // The live area is unaffected by a failed registry read.
+    expect(screen.getByTestId("metric-voltage")).toBeInTheDocument();
+  });
+});
+
+describe("the live telemetry chart", () => {
+  it("plots voltage and current on separately labelled axes", async () => {
+    server.use(...baseHandlers());
+    renderAt(`/devices/${DEVICE_ID}`, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() => expect(screen.getByTestId("chart-live")).toBeInTheDocument());
+    // Volts and amps are different quantities; the legend names which axis
+    // each line is read against.
+    expect(screen.getByText(/Voltage — left axis \(V\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Current — right axis \(A\)/)).toBeInTheDocument();
+  });
+});
+
+describe("the system information card", () => {
+  const path = `/devices/${DEVICE_ID}`;
+
+  it("prints the health states the API returned, not a green default", async () => {
+    server.use(
+      http.get("*/api/v1/health", () =>
+        HttpResponse.json(health({ mqtt: "disconnected", model: "unavailable" })),
+      ),
+      ...baseHandlers(),
+    );
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() => expect(screen.getByTestId("system-info")).toBeInTheDocument());
+    const panel = screen.getByTestId("system-info");
+    expect(panel).toHaveTextContent("disconnected");
+    expect(panel).toHaveTextContent("unavailable");
+    expect(panel).toHaveTextContent("0.1.0");
+  });
+});
+
+describe("the reading-window control", () => {
+  const path = `/devices/${DEVICE_ID}`;
+
+  it("is not offered when no window would filter anything", async () => {
+    server.use(...baseHandlers());
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() => expect(screen.getByTestId("chart-live")).toBeInTheDocument());
+    // Five rows: a "Last 60" button would drop nothing, so it is not shown.
+    expect(screen.queryByRole("button", { name: "Last 60" })).not.toBeInTheDocument();
+  });
+
+  it("narrows the live chart to the readings actually held", async () => {
+    server.use(
+      http.get("*/api/v1/devices/:id/telemetry", () =>
+        HttpResponse.json({ items: telemetryPage(80) }),
+      ),
+      ...baseHandlers(),
+    );
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() => expect(screen.getByText(/80 readings shown/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Last 60" }));
+
+    expect(screen.getByText(/60 readings shown/)).toBeInTheDocument();
+    // The window is a view over loaded rows; it never refetches or invents any.
+    expect(screen.getByRole("button", { name: "All 80" })).toBeInTheDocument();
+  });
+});
+
+describe("the live badge on the device dashboard", () => {
+  const path = `/devices/${DEVICE_ID}`;
+
+  /** A device page whose newest reading arrived just now. */
+  function freshHandlers(overrides: { mqtt?: string; status?: "online" | "offline" | "stale" } = {}) {
+    const fresh = telemetry({ id: 900, received_at: new Date().toISOString() });
+    return [
+      http.get("*/api/v1/health", () =>
+        HttpResponse.json(health({ mqtt: overrides.mqtt ?? "connected", model: "unavailable" })),
+      ),
+      http.get("*/api/v1/devices", () =>
+        HttpResponse.json({ items: [device({ status: overrides.status ?? "online" })] }),
+      ),
+      http.get("*/api/v1/devices/:id/telemetry", () => HttpResponse.json({ items: [fresh] })),
+      http.get("*/api/v1/devices/:id/anomalies", () => HttpResponse.json({ items: [] })),
+    ];
+  }
+
+  async function openSocket() {
+    await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
+    act(() => FakeSocket.latest.open());
+  }
+
+  it("says Live when backend, broker, socket, device and freshness all hold", async () => {
+    server.use(...freshHandlers());
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+    await openSocket();
+
+    await waitFor(() => expect(screen.getByTestId("live-state")).toHaveTextContent("Live"));
+    expect(screen.getByTestId("live-state")).toHaveAttribute("data-level", "live");
+    expect(screen.getByTestId("metric-provenance")).toHaveTextContent("Live measurements");
+    expect(screen.getByRole("heading", { name: "Live Telemetry" })).toBeInTheDocument();
+  });
+
+  it("renames the chart the moment the verdict drops, with no new reading", async () => {
+    server.use(...freshHandlers());
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+    await openSocket();
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Live Telemetry" })).toBeInTheDocument(),
+    );
+
+    // Only the device status changes: the series is untouched.
+    act(() =>
+      FakeSocket.latest.deliver({
+        schema_version: 1,
+        type: "status",
+        emitted_at: new Date().toISOString(),
+        data: { device_id: DEVICE_ID, status: "offline", last_seen_at: new Date().toISOString() },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Telemetry history" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("heading", { name: "Live Telemetry" })).not.toBeInTheDocument();
+  });
+
+  it("never says Live while the broker is disconnected, though the socket is open", async () => {
+    server.use(...freshHandlers({ mqtt: "disconnected" }));
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+    await openSocket();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("live-state")).toHaveTextContent("Broker disconnected"),
+    );
+    expect(screen.getByTestId("connection-banner")).toHaveTextContent("WebSocket connected");
+    expect(screen.getByTestId("live-state")).not.toHaveAttribute("data-level", "live");
+  });
+
+  it("never says Live while the device is offline, and keeps its history on screen", async () => {
+    server.use(...freshHandlers({ status: "offline" }));
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+    await openSocket();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("live-state")).toHaveTextContent("Device offline"),
+    );
+    // An outage hides nothing that was already loaded.
+    expect(screen.getByTestId("chart-voltage")).toBeInTheDocument();
+    expect(screen.getByTestId("metric-voltage")).toHaveTextContent("7.840 V");
+  });
+
+  it("calls an old reading stale and labels the KPIs as history, not measurements", async () => {
+    // The shared fixtures are stamped January 2026, so they are long stale.
+    server.use(...baseHandlers());
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+    await openSocket();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("live-state")).toHaveTextContent("Stale data"),
+    );
+    expect(screen.getByTestId("metric-provenance")).toHaveTextContent("Last known readings");
+    expect(screen.getByTestId("metric-provenance")).not.toHaveTextContent("Live measurements");
+    // The chart over that history must not call itself live either.
+    expect(screen.getByRole("heading", { name: "Telemetry history" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Live Telemetry" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("live-state-last-received")).toBeInTheDocument();
+  });
+
+  it("says the backend is unavailable when health cannot be read", async () => {
+    server.use(
+      http.get("*/api/v1/health", () => HttpResponse.error()),
+      ...baseHandlers(),
+    );
+    renderAt(path, <DeviceDetailView />, "/devices/:deviceId");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("live-state")).toHaveTextContent("Backend unavailable"),
     );
   });
 });

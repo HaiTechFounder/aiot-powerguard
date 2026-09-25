@@ -56,6 +56,7 @@ export function AnomalyList({
           />
         )
       ) : (
+        <div className="table-wrap">
         <table className="table" data-testid="anomaly-table">
           <thead>
             <tr>
@@ -82,6 +83,7 @@ export function AnomalyList({
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
